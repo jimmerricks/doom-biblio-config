@@ -1,0 +1,267 @@
+* Bare bones Dooom Emacs biblio configuration
+
+** Doom packages
+
+The config relies on the following packages (see the 'init.el' file):
+
+- literate config
+- ivy
+- pdf-tools
+- org-roam
+- org-noter
+
+Do not install the Doom biblio package. That will all be managed here.
+
+** Packages managed by this config file
+
+These are the packages that will be installed by 'packages.el' and configured here:
+
+- bibtex-completion
+- ivy-bibtex
+- org-ref
+- org-roam-bibtex
+
+** Configure org
+
+Make available '#+MODIFIED', an automatically updated timestamp, for org files.
+
+#+BEGIN_SRC emacs-lisp
+(after! org
+  (setq time-stamp-active t
+        time-stamp-line-limit 4
+        time-stamp-start "#\\+MODIFIED:[ \t]*"
+        time-stamp-end "$"
+        time-stamp-format "\[%04y-%02m-%02d %3a %02H:%02M\]")
+  (add-hook 'write-file-hooks 'time-stamp))
+#+END_SRC
+
+** Configure org-roam
+
+Set the default directory for =org-roam=, where notes should be stored.
+
+#+BEGIN_SRC emacs-lisp
+(after! (org org-roam)
+  (setq org-roam-directory "~/documents/notes"))
+#+END_SRC
+
+Use hyphens rather than underscores for the filename slug.
+
+#+BEGIN_SRC emacs-lisp
+(after! (org org-roam)
+  (defun org-roam--title-to-slug (title)
+    (cl-flet* ((nonspacing-mark-p (char)
+                 (eq 'Mn (get-char-code-property char 'general-category)))
+               (strip-nonspacing-marks (s)
+                 (apply #'string (seq-remove #'nonspacing-mark-p
+                   (ucs-normalize-NFD-string s))))
+               (cl-replace (title pair)
+                 (replace-regexp-in-string (car pair) (cdr pair) title)))
+      (let* ((pairs `(("[^[:alnum:][:digit:]]" . "-")  ;; convert anything not alphanumeric
+                      ("--*" . "-")  ;; remove sequential underscores
+                      ("^-" . "")  ;; remove starting underscore
+                      ("-$" . "")))  ;; remove ending underscore
+             (slug (-reduce-from #'cl-replace (strip-nonspacing-marks title) pairs)))
+        (s-downcase slug)))))
+#+END_SRC
+
+Set the =org-roam= capture templates.
+
+#+BEGIN_SRC emacs-lisp
+;; Template declarations
+(after! (org org-roam)
+  (setq org-roam-capture-templates
+        '(("n" "note" plain (function org-roam--capture-get-point)
+           "%?"
+           :file-name "%(format-time-string \"%y%m%d\" (current-time) t)-${slug}"
+           :head "#+TITLE: ${title}\n#+CREATED: %(org-insert-time-stamp (current-time) t t)\n#+MODIFIED: %(org-insert-time-stamp (current-time) t t)\n\n"
+           :unnarrowed t t)))
+  (setq org-roam-dailies-capture-templates
+        '(("d" "daily" plain (function org-roam-capture--get-point)
+           ""
+           :immediate-finish t
+           :file-name "journal/%<%Y>/%<%y%m%d>"
+           :head "#+TITLE: %<%A %B %-d, %Y>\n#+CREATED: %(org-insert-time-stamp (current-time) t t)\n#+MODIFIED: %(org-insert-time-stamp (current-time) t t)\n\n"))))
+#+END_SRC
+
+** Load the biblio module
+
+The biblio code has been copied from [[https://github.com/hlissner/doom-emacs/pull/2888][Doom Emacs pull request 2888]] with a slight modification to the =org-ref= code.
+
+#+BEGIN_SRC emacs-lisp
+(load "~/.config/doom/biblio.el")
+#+END_SRC
+
+Set the biblio variables:
+
+#+BEGIN_SRC emacs-lisp
+(setq! +biblio-default-bibliography-files '("~/media/papers/library.bib")
+       +biblio-notes-path "~/documents/notes/references/")
+#+END_SRC
+
+** Configure bibtex-completion
+
+Flip the order of the =bibtex-completion= results:
+
+#+BEGIN_SRC emacs-lisp
+(after! bibtex-completion
+  (advice-add 'bibtex-completion-candidates
+              :filter-return 'reverse))
+#+END_SRC
+
+Add and configure =bibtex-completion= citation input to ensure compatibility with =org-ref=:
+
+#+BEGIN_SRC emacs-lisp
+(defun my/bibtex-completion-format-org-ref (keys)
+  "Format org-ref references for keys in KEYS."
+  (s-join ", "
+          (--map (format "cite:%s" it) keys)))
+
+;; Set the default cite format
+(after! bibtex-completion
+  (setq ivy-bibtex-default-action 'ivy-bibtex-insert-citation)
+  (setq bibtex-completion-format-citation-functions
+        '((org-mode      . my/bibtex-completion-format-org-ref)
+          (latex-mode    . bibtex-completion-format-citation-cite)
+          (markdown-mode . bibtex-completion-format-citation-pandoc-citeproc)
+          (default       . bibtex-completion-format-citation-default))))
+#+END_SRC
+
+** Configure org-ref
+
+Unfortunately, =org-ref= sometimes has [[https://github.com/jkitchin/org-ref/issues/647#issuecomment-497867791][a problem with lag]]. This gets progressively worse the more citations on the screen. The following fixes the issue at the expense of some minor functionality.
+
+#+BEGIN_SRC emacs-lisp
+(after! org-ref
+  (setq org-ref-show-broken-links nil))
+#+END_SRC
+
+Ensure that =org-ref= opens PDFs in =pdf-tools= using the 'file' field in the bibtex file. In order to get this working, it was necessary to comment out the setting of the 'org-ref-open-pdf-function' variable in 'biblio.el'.
+
+#+BEGIN_SRC emacs-lisp
+(defun my/open-pdf-at-point ()
+  "Open the pdf for bibtex key under point if it exists."
+  (interactive)
+  (let* ((results (org-ref-get-bibtex-key-and-file))
+         (key (car results))
+         (pdf-file (car (bibtex-completion-find-pdf key))))
+    (if (file-exists-p pdf-file)
+        (org-open-file pdf-file)
+      (message "No PDF found for %s" key))))
+
+(after! org-ref
+  (setq org-ref-open-pdf-function 'my/open-pdf-at-point))
+#+END_SRC
+
+** Configure org-roam-bibtex
+
+Format the bibliographic notes org-capture template for consistency with =org-roam= and interoperability with =org-noter=.
+
+#+BEGIN_SRC emacs-lisp
+(after! org-roam-bibtex
+  (setq orb-templates
+        '(("r" "reference" plain (function org-roam-capture--get-point)
+             ""
+             :file-name "references/${=KEY=}"
+             :head "#+TITLE: ${author-or-editor}'s \"${title}\"\n#+ROAM_KEY: ${ref}\n#+CREATED: %(org-insert-time-stamp (current-time) t t)\n#+MODIFIED: %(org-insert-time-stamp (current-time) t t)\n\n%?"
+             :unnarrowed t t)
+          ("a" "annotations" plain (function org-roam-capture--get-point)
+             ""
+             :file-name "references/${=KEY=}"
+             :head "#+TITLE: ${author-or-editor}'s \"${title}\"\n#+ROAM_KEY: ${ref}\n#+CREATED: %(org-insert-time-stamp (current-time) t t)\n#+MODIFIED: %(org-insert-time-stamp (current-time) t t)\n\n%?\n\n* Annotations\n  :PROPERTIES:\n  :Custom_ID: ${=key=}\n  :URL: ${url}\n  :AUTHOR: ${author-or-editor}\n  :NOTER_DOCUMENT: %(orb-process-file-field \"${=key=}\")\n  :NOTER_PAGE: \n  :END:\n"
+             :unnarrowed t t))))
+#+END_SRC
+
+** Configure Doom chords
+
+Doom Emacs shortcuts for useful functions.
+
+#+BEGIN_SRC emacs-lisp
+(after! (org org-ref bibtex-completion)
+  (map! :leader
+    (:prefix ("n b" . "bibliography")
+     :desc "Insert/update citation" "i" #'org-ref-ivy-insert-cite-link
+     :desc "Activate ivy-bibtex" "I" #'ivy-bibtex)))
+#+END_SRC
+
+Define some custom =org-ref= functions and give them a keychord. Most of the code here was adapted from '[[https://github.com/jkitchin/org-ref/blob/18d25b961e297c255027cb3b4210d686ce7c01a3/org-ref-ivy-cite.el][org-ref-ivy-cite.el]]'.
+
+#+BEGIN_SRC emacs-lisp
+;; Open or create a note
+(defun my/org-ref-ivy-open-notes (&optional arg)
+  "Open the note of reference selected using ivy-bibtex."
+  (interactive "P")
+  (setq org-ref-bibtex-files (if arg org-ref-default-bibliography
+                               (org-ref-find-bibliography)))
+  (ivy-read "Open/create note: " (orhc-bibtex-candidates)
+            :require-match t
+            :action 'my/ivy-bibtex-open-notes))
+
+(defun my/ivy-bibtex-open-notes (entry)
+  "Open the notes associated with ENTRY selected from `orhc-bibtex-candidates'."
+    (org-ref-open-notes-at-point (cdr (assoc "=key=" entry))))
+
+;; Open a PDF
+(defun my/org-ref-ivy-open-pdf (&optional arg)
+  "Open the PDF of reference selected using ivy-bibtex."
+  (interactive "P")
+  (setq org-ref-bibtex-files (if arg org-ref-default-bibliography
+                               (org-ref-find-bibliography)))
+  (ivy-read "Open pdf: " (orhc-bibtex-candidates)
+            :require-match t
+            :action 'my/ivy-bibtex-open-pdf))
+
+(defun my/ivy-bibtex-open-pdf (entry)
+  "Open the PDF associated with ENTRY selected from `orhc-bibtex-candidates'."
+  (with-ivy-window
+    (let ((pdf (car (bibtex-completion-find-pdf (cdr (assoc "=key=" entry))))))
+         (if (file-exists-p pdf)
+           (org-open-file pdf)
+           (message "No pdf found for %s" (cdr (assoc "=key=" entry)))))))
+
+;; Open a bibtex entry
+(defun my/org-ref-ivy-open-entry (&optional arg)
+  "Open the bibtex entry of reference selected using ivy-bibtex."
+  (interactive "P")
+  (setq org-ref-bibtex-files (if arg org-ref-default-bibliography
+                               (org-ref-find-bibliography)))
+  (ivy-read "Open entry: " (orhc-bibtex-candidates)
+            :require-match t
+            :action 'or-ivy-bibtex-open-entry))
+
+;; Copy a citation key
+(defun my/org-ref-ivy-copy-entry (&optional arg)
+  "Copy the bibtex entry of reference selected using ivy-bibtex."
+  (interactive "P")
+  (setq org-ref-bibtex-files (if arg org-ref-default-bibliography
+                               (org-ref-find-bibliography)))
+  (ivy-read "Open entry: " (orhc-bibtex-candidates)
+            :require-match t
+            :action 'or-ivy-bibtex-copy-entry))
+
+;; Open a URL
+(defun my/org-ref-ivy-open-url (&optional arg)
+  "Open the URL of reference selected using ivy-bibtex."
+  (interactive "P")
+  (setq org-ref-bibtex-files (if arg org-ref-default-bibliography
+                               (org-ref-find-bibliography)))
+  (ivy-read "Open entry: " (orhc-bibtex-candidates)
+            :require-match t
+            :action 'or-ivy-bibtex-open-url))
+
+;; Add the custom functions to the bibliography key-chords.
+(after! (org org-ref bibtex-completion)
+  (map! :leader
+      :desc "Open/create note" "n b n" #'my/org-ref-ivy-open-notes
+      :desc "Open bibtex entry" "n b o" #'my/org-ref-ivy-open-entry
+      :desc "Open PDF" "n b p" #'my/org-ref-ivy-open-pdf
+      :desc "Open URL" "n b u" #'my/org-ref-ivy-open-url
+      :desc "Copy bibtex entry" "n b y" #'my/org-ref-ivy-copy-entry))
+#+END_SRC
+
+Add a chord for ORB actions. It would be nice to configure this to appear only when the note has a ROAM_KEY.
+
+#+BEGIN_SRC emacs-lisp
+(after! (org org-roam-bibtex)
+  (map! :leader
+        :desc "ORB note actions" "n b a" #'orb-note-actions))
+#+END_SRC
